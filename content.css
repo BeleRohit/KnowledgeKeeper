@@ -1,0 +1,28 @@
+/* KnowledgeKeeper content styles */
+.kk-highlight {
+  background-color: #FFE066;
+  border-radius: 2px;
+  padding: 1px 0;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.kk-highlight:hover {
+  filter: brightness(0.92);
+}
+
+.kk-sticky-note {
+  position: absolute;
+  z-index: 2147483640;
+  background: #FFFDE7;
+  border: 1px solid #F9A825;
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 12px;
+  font-family: 'DM Sans', sans-serif;
+  box-shadow: 2px 3px 10px rgba(0,0,0,0.15);
+  min-width: 160px;
+  max-width: 240px;
+  resize: both;
+  overflow: auto;
+}
