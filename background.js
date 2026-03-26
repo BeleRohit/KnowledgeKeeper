@@ -43,17 +43,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+function decodeEntities(str) {
+  return str
+    .replace(/&#39;/g, "'").replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/\n/g, " ").trim();
+}
+
 async function fetchTranscript(url) {
+  // Prefer JSON format — most reliable across all YouTube caption track types
+  const jsonUrl = url.includes("fmt=") ? url : url + (url.includes("?") ? "&" : "?") + "fmt=json3";
+  try {
+    const jsonResp = await fetch(jsonUrl);
+    if (jsonResp.ok) {
+      const data = await jsonResp.json();
+      if (data.events && data.events.length) {
+        const transcript = data.events
+          .filter(e => e.segs)
+          .flatMap(e => e.segs.map(s => (s.utf8 || "").replace(/\n/g, " ")))
+          .join(" ")
+          .replace(/\s{2,}/g, " ")
+          .trim();
+        if (transcript) return { transcript };
+      }
+    }
+  } catch (_) { /* fall through to XML */ }
+
+  // Fallback: parse XML (two known tag formats)
   const resp = await fetch(url);
   const xml = await resp.text();
-  const matches = [...xml.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)];
-  if (!matches.length) throw new Error("No transcript text found in captions.");
+
+  // Format 1: <text start="…" dur="…">content</text>
+  let matches = [...xml.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)];
+  // Format 2: <p t="…" d="…">content</p>  (timedtext format 3)
+  if (!matches.length) matches = [...xml.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)];
+
+  if (!matches.length) throw new Error("No transcript text found. The video may not have captions in a supported format.");
+
   const transcript = matches
-    .map(m => m[1]
-      .replace(/&#39;/g, "'").replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"').replace(/\n/g, " ").trim()
-    )
+    .map(m => decodeEntities(m[1].replace(/<[^>]+>/g, "")))
     .filter(Boolean)
     .join(" ");
   return { transcript };
