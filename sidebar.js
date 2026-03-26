@@ -352,6 +352,16 @@ function extractVideoId(url) {
   return null;
 }
 
+async function getTranscriptFromServer(videoId) {
+  const resp = await fetch("http://localhost:5005/transcript?videoId=" + encodeURIComponent(videoId), {
+    signal: AbortSignal.timeout(15000)
+  });
+  const data = await resp.json();
+  if (!resp.ok || data.error) throw new Error(data.error || "Server error");
+  if (!data.transcript) throw new Error("Empty transcript returned by server");
+  return data.transcript;
+}
+
 function setYtStatus(msg) {
   const el = document.getElementById("ytStatus");
   if (!msg) { el.style.display = "none"; return; }
@@ -370,47 +380,48 @@ async function generateYoutubeNotes(videoUrl) {
   btn.disabled = true;
 
   try {
-    setYtStatus("Extracting transcript…");
-    let transcript, title, itemUrl = videoUrl;
+    let transcript = "", title = "", itemUrl = "https://www.youtube.com/watch?v=" + videoId;
 
     const tab = await getActiveTab();
-    const tabVideoId = tab?.url ? extractVideoId(tab.url) : null;
+    const onYoutubeTab = tab?.url && extractVideoId(tab.url) === videoId;
 
-    if (tabVideoId === videoId) {
-      // On the YouTube tab — content script fetches transcript with session cookies
+    // Step 1: Python local server — most reliable (youtube-transcript-api)
+    setYtStatus("Fetching transcript via local server…");
+    try {
+      transcript = await getTranscriptFromServer(videoId);
+    } catch(serverErr) {
+      const isOffline = serverErr.name === "TypeError" || serverErr.name === "AbortError";
+      if (isOffline) {
+        showToast("Start server first: python server.py");
+        throw new Error("Local transcript server is not running. Start it with: python server.py");
+      }
+      // Server is running but returned an error (e.g. no captions) — bubble it up
+      throw serverErr;
+    }
+
+    // Step 2: Get video title (content script if on tab, else background page fetch)
+    setYtStatus("Getting video info…");
+    if (onYoutubeTab) {
       const res = await new Promise(resolve => {
         chrome.tabs.sendMessage(tab.id, { type: "EXTRACT_YOUTUBE_TRANSCRIPT" }, r => {
-          if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
-          else resolve(r || { error: "No response from content script" });
+          if (chrome.runtime.lastError) resolve({});
+          else resolve(r || {});
         });
       });
-      if (res && !res.error) { transcript = res.transcript; title = res.title; itemUrl = res.url; }
+      if (res.title) { title = res.title; itemUrl = res.url || itemUrl; }
     }
 
-    if (!transcript) {
-      // Fallback (paste URL path): background fetches the YouTube page to get caption URL,
-      // then fetches the transcript XML — works for most public videos
-      setYtStatus("Fetching page data…");
+    if (!title) {
       const pageRes = await new Promise(resolve => {
         chrome.runtime.sendMessage({ type: "FETCH_YOUTUBE_PAGE", videoId }, r => {
-          if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
-          else resolve(r || { error: "No response" });
+          if (chrome.runtime.lastError) resolve({});
+          else resolve(r || {});
         });
       });
-      if (pageRes?.error) throw new Error(pageRes.error);
-      title = title || pageRes.title;
-      itemUrl = "https://www.youtube.com/watch?v=" + videoId;
-
-      setYtStatus("Fetching transcript…");
-      const transcriptRes = await new Promise(resolve => {
-        chrome.runtime.sendMessage({ type: "FETCH_TRANSCRIPT", transcriptUrl: pageRes.transcriptUrl }, r => {
-          if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
-          else resolve(r || { error: "No response" });
-        });
-      });
-      if (transcriptRes?.error) throw new Error(transcriptRes.error);
-      transcript = transcriptRes.transcript;
+      title = pageRes.title || "";
     }
+
+    if (!title) title = "YouTube Video";
 
     // Step 3: Generate structured notes via Groq
     setYtStatus("Generating notes…");
