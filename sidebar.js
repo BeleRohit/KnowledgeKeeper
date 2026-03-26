@@ -165,8 +165,8 @@ function renderItems(query) {
     list.innerHTML = '<div class="empty-state"><div class="empty-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div><p class="empty-title">'+(query?"No results":"Library empty")+'</p><p class="empty-sub">'+(query?"Nothing matched your search.":"Save pages, highlights, or notes to get started.")+'</p></div>';
     return;
   }
-  const badgeCls = { page:"badge-page", highlight:"badge-highlight", note:"badge-note", keypoints:"badge-keypoints" };
-  const badgeLbl = { page:"Page", highlight:"Highlight", note:"Note", keypoints:"Key Points" };
+  const badgeCls = { page:"badge-page", highlight:"badge-highlight", note:"badge-note", keypoints:"badge-keypoints", youtube:"badge-youtube" };
+  const badgeLbl = { page:"Page", highlight:"Highlight", note:"Note", keypoints:"Key Points", youtube:"YouTube" };
   items.forEach(item => {
     const card = document.createElement("div");
     card.className = "item-card";
@@ -341,6 +341,129 @@ function renderOutline(text) {
 }
 
 // ═══════════════════════════════════════════
+// YOUTUBE NOTES
+// ═══════════════════════════════════════════
+function extractVideoId(url) {
+  try {
+    const u = new URL(url.trim());
+    if (u.hostname.includes("youtube.com")) return u.searchParams.get("v");
+    if (u.hostname === "youtu.be") return u.pathname.slice(1).split("?")[0];
+  } catch {}
+  return null;
+}
+
+function setYtStatus(msg) {
+  const el = document.getElementById("ytStatus");
+  if (!msg) { el.style.display = "none"; return; }
+  el.style.display = "flex";
+  el.innerHTML = '<span class="spinner" style="width:10px;height:10px;border-width:1.5px;flex-shrink:0"></span>' + escHtml(msg);
+}
+
+async function generateYoutubeNotes(videoUrl) {
+  const { apiKey } = getSettings();
+  if (!apiKey) { showToast("Add Groq API key in Settings first"); return; }
+
+  const videoId = extractVideoId(videoUrl);
+  if (!videoId) { showToast("Invalid YouTube URL"); return; }
+
+  const btn = document.getElementById("ytModalGenerate");
+  btn.disabled = true;
+
+  try {
+    // Step 1: Get caption track URL
+    setYtStatus("Extracting transcript…");
+    let transcriptUrl, title, itemUrl = videoUrl;
+
+    const tab = await getActiveTab();
+    const tabVideoId = tab?.url ? extractVideoId(tab.url) : null;
+
+    if (tabVideoId === videoId) {
+      // We're on the YouTube tab — ask content script directly
+      const res = await new Promise(resolve => {
+        chrome.tabs.sendMessage(tab.id, { type: "EXTRACT_YOUTUBE_TRANSCRIPT" }, r => {
+          if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+          else resolve(r || { error: "No response from content script" });
+        });
+      });
+      if (res && !res.error) { transcriptUrl = res.transcriptUrl; title = res.title; itemUrl = res.url; }
+    }
+
+    if (!transcriptUrl) {
+      // Fallback: fetch the YouTube page from the background service worker
+      const res = await new Promise(resolve => {
+        chrome.runtime.sendMessage({ type: "FETCH_YOUTUBE_PAGE", videoId }, r => {
+          if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+          else resolve(r || { error: "No response" });
+        });
+      });
+      if (res?.error) throw new Error(res.error);
+      transcriptUrl = res.transcriptUrl;
+      title = res.title;
+      itemUrl = "https://www.youtube.com/watch?v=" + videoId;
+    }
+
+    // Step 2: Fetch the transcript text
+    setYtStatus("Fetching transcript…");
+    const transcriptRes = await new Promise(resolve => {
+      chrome.runtime.sendMessage({ type: "FETCH_TRANSCRIPT", transcriptUrl }, r => {
+        if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+        else resolve(r || { error: "No response" });
+      });
+    });
+    if (transcriptRes?.error) throw new Error(transcriptRes.error);
+    const transcript = transcriptRes.transcript;
+
+    // Step 3: Generate structured notes via Groq
+    setYtStatus("Generating notes…");
+    const notes = await groqRequest(
+      apiKey,
+      [{ role: "user", content:
+        "Generate comprehensive structured notes for this YouTube video.\n\n" +
+        "Title: " + title + "\n\n" +
+        "Transcript:\n" + transcript.slice(0, 6000)
+      }],
+      "Return structured notes in this exact format:\n\n" +
+      "## Overview\n" +
+      "2-3 sentences summarizing the video.\n\n" +
+      "## Key Concepts\n" +
+      "• concept with brief explanation\n\n" +
+      "## Detailed Notes\n" +
+      "### Subtopic Title\n" +
+      "• point\n\n" +
+      "## Key Takeaways\n" +
+      "• actionable or memorable point\n\n" +
+      "Be thorough but concise. Use bullet points. No filler text."
+    );
+
+    // Extract Overview section as the card summary
+    const overviewMatch = notes.match(/##\s*Overview\s*\n([\s\S]*?)(?=\n##|$)/i);
+    const summary = overviewMatch ? overviewMatch[1].replace(/^•\s*/gm, "").trim() : notes.slice(0, 300);
+
+    saveItemToStorage({
+      type: "youtube",
+      title,
+      url: itemUrl,
+      favicon: "https://www.youtube.com/favicon.ico",
+      text: transcript.slice(0, 8000),
+      summary,
+      outline: notes
+    });
+
+    renderItems(); updateStats();
+    document.getElementById("ytModal").classList.add("hidden");
+    showToast("YouTube notes saved ✓");
+    document.querySelector('[data-tab="library"]').click();
+
+  } catch(e) {
+    setYtStatus("");
+    showToast("Error: " + e.message);
+  } finally {
+    btn.disabled = false;
+    setYtStatus("");
+  }
+}
+
+// ═══════════════════════════════════════════
 // AI CHAT
 // ═══════════════════════════════════════════
 async function sendChatMessage() {
@@ -479,6 +602,31 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("noteCancel").addEventListener("click", () => document.getElementById("noteModal").classList.add("hidden"));
   document.getElementById("noteSave").addEventListener("click", saveNote);
   document.getElementById("noteText").addEventListener("keydown", e => { if (e.key==="Enter"&&e.ctrlKey) saveNote(); });
+
+  // YouTube Notes button — pre-fill URL if already on a YouTube video tab
+  document.getElementById("youtubeNotesBtn").addEventListener("click", async () => {
+    const tab = await getActiveTab();
+    const ytUrl = tab?.url && extractVideoId(tab.url) ? tab.url : "";
+    document.getElementById("ytUrlInput").value = ytUrl;
+    setYtStatus("");
+    document.getElementById("ytModalGenerate").disabled = false;
+    document.getElementById("ytModal").classList.remove("hidden");
+    if (!ytUrl) document.getElementById("ytUrlInput").focus();
+  });
+
+  // YouTube modal handlers
+  document.getElementById("ytModalCancel").addEventListener("click", () => {
+    document.getElementById("ytModal").classList.add("hidden");
+    setYtStatus("");
+  });
+  document.getElementById("ytModalGenerate").addEventListener("click", () => {
+    const url = document.getElementById("ytUrlInput").value.trim();
+    if (!url) { showToast("Please enter a YouTube URL"); return; }
+    generateYoutubeNotes(url);
+  });
+  document.getElementById("ytUrlInput").addEventListener("keydown", e => {
+    if (e.key === "Enter") document.getElementById("ytModalGenerate").click();
+  });
 
   // Settings save
   document.getElementById("saveSettingsBtn").addEventListener("click", () => {

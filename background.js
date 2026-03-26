@@ -33,7 +33,60 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     fetchGroq(message.payload).then(sendResponse).catch(err => sendResponse({ error: err.message }));
     return true;
   }
+  if (message.type === "FETCH_TRANSCRIPT") {
+    fetchTranscript(message.transcriptUrl).then(sendResponse).catch(err => sendResponse({ error: err.message }));
+    return true;
+  }
+  if (message.type === "FETCH_YOUTUBE_PAGE") {
+    fetchYoutubePage(message.videoId).then(sendResponse).catch(err => sendResponse({ error: err.message }));
+    return true;
+  }
 });
+
+async function fetchTranscript(url) {
+  const resp = await fetch(url);
+  const xml = await resp.text();
+  const matches = [...xml.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)];
+  if (!matches.length) throw new Error("No transcript text found in captions.");
+  const transcript = matches
+    .map(m => m[1]
+      .replace(/&#39;/g, "'").replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"').replace(/\n/g, " ").trim()
+    )
+    .filter(Boolean)
+    .join(" ");
+  return { transcript };
+}
+
+async function fetchYoutubePage(videoId) {
+  const resp = await fetch("https://www.youtube.com/watch?v=" + videoId, {
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }
+  });
+  if (!resp.ok) throw new Error("Could not load YouTube page (status " + resp.status + ")");
+  const html = await resp.text();
+
+  const marker = "ytInitialPlayerResponse = ";
+  const start = html.indexOf(marker);
+  if (start === -1) throw new Error("Could not find video data on YouTube page.");
+
+  // Walk bracket depth to extract the full JSON object
+  let depth = 0, i = start + marker.length;
+  for (; i < html.length; i++) {
+    if (html[i] === "{") depth++;
+    else if (html[i] === "}") { depth--; if (depth === 0) break; }
+  }
+  const pr = JSON.parse(html.slice(start + marker.length, i + 1));
+
+  const tracks = pr.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!tracks?.length) throw new Error("No captions available for this video.");
+  const track = tracks.find(t => t.languageCode === "en") || tracks[0];
+  return {
+    transcriptUrl: track.baseUrl,
+    title: pr.videoDetails?.title || "YouTube Video",
+    lang: track.languageCode
+  };
+}
 
 async function fetchGroq(payload) {
   const { apiKey, messages, systemPrompt } = payload;

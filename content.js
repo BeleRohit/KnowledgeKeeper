@@ -49,6 +49,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "APPLY_STORED_HIGHLIGHTS") {
     applyStoredHighlights(message.highlights);
   }
+
+  if (message.type === "EXTRACT_YOUTUBE_TRANSCRIPT") {
+    try {
+      const pr = window.ytInitialPlayerResponse;
+      if (!pr) { sendResponse({ error: "No video data found. Make sure the video is fully loaded." }); return true; }
+      const tracks = pr.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (!tracks?.length) { sendResponse({ error: "No captions available for this video." }); return true; }
+      const track = tracks.find(t => t.languageCode === "en") || tracks[0];
+      sendResponse({
+        transcriptUrl: track.baseUrl,
+        title: pr.videoDetails?.title || document.title,
+        videoId: pr.videoDetails?.videoId || "",
+        url: location.href,
+        lang: track.languageCode
+      });
+    } catch(e) {
+      sendResponse({ error: e.message });
+    }
+    return true;
+  }
 });
 
 // Text selection handler for highlight mode
