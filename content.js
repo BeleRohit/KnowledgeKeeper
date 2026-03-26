@@ -4,7 +4,7 @@ let isHighlightMode = false;
 let highlightColor = "#FFE066";
 
 // Listen for messages from background/sidebar
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "TOGGLE_HIGHLIGHT_MODE") {
     isHighlightMode = message.enabled;
     document.body.style.cursor = isHighlightMode ? "crosshair" : "";
@@ -51,56 +51,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "EXTRACT_YOUTUBE_TRANSCRIPT") {
-    // Fetch transcript HERE in the content script context so YouTube session
-    // cookies are included — background service worker requests lack them.
-    (async () => {
-      try {
-        const pr = window.ytInitialPlayerResponse;
-        if (!pr) { sendResponse({ error: "No video data found. Make sure the video is fully loaded." }); return; }
-        const tracks = pr.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-        if (!tracks?.length) { sendResponse({ error: "No captions available for this video." }); return; }
-
-        const track = tracks.find(t => t.languageCode === "en") || tracks[0];
-        const baseUrl = track.baseUrl;
-        let transcript = "";
-
-        // Try JSON format first (fmt=json3)
-        try {
-          const sep = baseUrl.includes("?") ? "&" : "?";
-          const jsonResp = await fetch(baseUrl + sep + "fmt=json3");
-          const data = await jsonResp.json();
-          if (data.events?.length) {
-            transcript = data.events
-              .filter(e => e.segs)
-              .flatMap(e => e.segs.map(s => (s.utf8 || "").replace(/\n/g, " ")))
-              .join(" ")
-              .replace(/\s{2,}/g, " ")
-              .trim();
-          }
-        } catch(_) {}
-
-        // XML fallback
-        if (!transcript) {
-          const xmlResp = await fetch(baseUrl);
-          const xml = await xmlResp.text();
-          const decode = s => s.replace(/&#39;/g,"'").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"');
-          let matches = [...xml.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)];
-          if (!matches.length) matches = [...xml.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)];
-          transcript = matches.map(m => decode(m[1].replace(/<[^>]+>/g,"")).replace(/\n/g," ").trim()).filter(Boolean).join(" ");
-        }
-
-        if (!transcript) { sendResponse({ error: "Could not extract transcript text from captions." }); return; }
-
-        sendResponse({
-          transcript,
-          title: pr.videoDetails?.title || document.title,
-          videoId: pr.videoDetails?.videoId || "",
-          url: location.href
-        });
-      } catch(e) {
-        sendResponse({ error: e.message });
-      }
-    })();
+    // Returns title + url (transcript comes from Python server; this is title-only fallback)
+    try {
+      const pr = window.ytInitialPlayerResponse;
+      if (!pr) { sendResponse({ error: "No video data found." }); return true; }
+      sendResponse({
+        title: pr.videoDetails?.title || document.title,
+        videoId: pr.videoDetails?.videoId || "",
+        url: location.href
+      });
+    } catch(e) {
+      sendResponse({ error: e.message });
+    }
     return true;
   }
 });
