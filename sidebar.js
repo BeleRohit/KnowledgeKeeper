@@ -353,7 +353,7 @@ function extractVideoId(url) {
 }
 
 async function getTranscriptFromServer(videoId) {
-  const resp = await fetch("http://localhost:5005/transcript?videoId=" + encodeURIComponent(videoId), {
+  const resp = await fetch("https://knowledgekeeper.onrender.com/transcript?videoId=" + encodeURIComponent(videoId), {
     signal: AbortSignal.timeout(15000)
   });
   const data = await resp.json();
@@ -385,17 +385,17 @@ async function generateYoutubeNotes(videoUrl) {
     const tab = await getActiveTab();
     const onYoutubeTab = tab?.url && extractVideoId(tab.url) === videoId;
 
-    // Step 1: Python local server — most reliable (youtube-transcript-api)
-    setYtStatus("Fetching transcript via local server…");
+    // Step 1: Remote transcript server (knowledgekeeper.onrender.com)
+    setYtStatus("Fetching transcript…");
     try {
       transcript = await getTranscriptFromServer(videoId);
     } catch(serverErr) {
-      const isOffline = serverErr.name === "TypeError" || serverErr.name === "AbortError";
-      if (isOffline) {
-        showToast("Start server first: python server.py");
-        throw new Error("Local transcript server is not running. Start it with: python server.py");
+      const isUnreachable = serverErr.name === "TypeError" || serverErr.name === "AbortError";
+      if (isUnreachable) {
+        showToast("Transcript server unreachable. Try again shortly.");
+        throw new Error("Transcript server unreachable: " + serverErr.message);
       }
-      // Server is running but returned an error (e.g. no captions) — bubble it up
+      // Server responded but returned an error (e.g. no captions) — bubble it up
       throw serverErr;
     }
 
