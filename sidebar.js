@@ -353,7 +353,7 @@ function extractVideoId(url) {
 }
 
 async function getTranscriptFromServer(videoId) {
-  const resp = await fetch("http://localhost:5005/transcript?videoId=" + encodeURIComponent(videoId), {
+  const resp = await fetch("https://knowledgekeeper.onrender.com/transcript?videoId=" + encodeURIComponent(videoId), {
     signal: AbortSignal.timeout(15000)
   });
   const data = await resp.json();
