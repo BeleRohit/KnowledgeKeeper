@@ -370,48 +370,47 @@ async function generateYoutubeNotes(videoUrl) {
   btn.disabled = true;
 
   try {
-    // Step 1: Get caption track URL
     setYtStatus("Extracting transcript…");
-    let transcriptUrl, title, itemUrl = videoUrl;
+    let transcript, title, itemUrl = videoUrl;
 
     const tab = await getActiveTab();
     const tabVideoId = tab?.url ? extractVideoId(tab.url) : null;
 
     if (tabVideoId === videoId) {
-      // We're on the YouTube tab — ask content script directly
+      // On the YouTube tab — content script fetches transcript with session cookies
       const res = await new Promise(resolve => {
         chrome.tabs.sendMessage(tab.id, { type: "EXTRACT_YOUTUBE_TRANSCRIPT" }, r => {
           if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
           else resolve(r || { error: "No response from content script" });
         });
       });
-      if (res && !res.error) { transcriptUrl = res.transcriptUrl; title = res.title; itemUrl = res.url; }
+      if (res && !res.error) { transcript = res.transcript; title = res.title; itemUrl = res.url; }
     }
 
-    if (!transcriptUrl) {
-      // Fallback: fetch the YouTube page from the background service worker
-      const res = await new Promise(resolve => {
+    if (!transcript) {
+      // Fallback (paste URL path): background fetches the YouTube page to get caption URL,
+      // then fetches the transcript XML — works for most public videos
+      setYtStatus("Fetching page data…");
+      const pageRes = await new Promise(resolve => {
         chrome.runtime.sendMessage({ type: "FETCH_YOUTUBE_PAGE", videoId }, r => {
           if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
           else resolve(r || { error: "No response" });
         });
       });
-      if (res?.error) throw new Error(res.error);
-      transcriptUrl = res.transcriptUrl;
-      title = res.title;
+      if (pageRes?.error) throw new Error(pageRes.error);
+      title = title || pageRes.title;
       itemUrl = "https://www.youtube.com/watch?v=" + videoId;
-    }
 
-    // Step 2: Fetch the transcript text
-    setYtStatus("Fetching transcript…");
-    const transcriptRes = await new Promise(resolve => {
-      chrome.runtime.sendMessage({ type: "FETCH_TRANSCRIPT", transcriptUrl }, r => {
-        if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
-        else resolve(r || { error: "No response" });
+      setYtStatus("Fetching transcript…");
+      const transcriptRes = await new Promise(resolve => {
+        chrome.runtime.sendMessage({ type: "FETCH_TRANSCRIPT", transcriptUrl: pageRes.transcriptUrl }, r => {
+          if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+          else resolve(r || { error: "No response" });
+        });
       });
-    });
-    if (transcriptRes?.error) throw new Error(transcriptRes.error);
-    const transcript = transcriptRes.transcript;
+      if (transcriptRes?.error) throw new Error(transcriptRes.error);
+      transcript = transcriptRes.transcript;
+    }
 
     // Step 3: Generate structured notes via Groq
     setYtStatus("Generating notes…");
